@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+chroma_db/
+extracted_images/
+*.log
+.env
+.egg-info/
+dist/
+build/
