@@ -127,10 +127,15 @@ with st.sidebar:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔄 Sync PDFs", use_container_width=True):
-            with st.spinner("Processing..."):
-                stats = sync_multimodal_data()
-                st.success(f"Indexed: {stats['text_chunks']} chunks, {stats['images']} images")
-                st.rerun()
+            try:
+                with st.spinner("Processing..."):
+                    stats = sync_multimodal_data()
+                    st.success(f"Indexed: {stats['text_chunks']} chunks, {stats['images']} images")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Sync failed: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc(), language="python")
     
     with col2:
         if st.button("🗑️ Clear DB", use_container_width=True):
@@ -231,46 +236,56 @@ st.divider()
 
 col1, col2 = st.columns([5, 1])
 with col1:
-    prompt = st.chat_input("Type your message here...")
+    prompt = st.chat_input("Type your message here...", accept_file=False, disabled=False)
 with col2:
     visualize = st.toggle("📊 Viz", value=False, help="Generate chart from data")
 
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt, "sources": []})
     
-    with st.spinner("Thinking..."):
-        docs, dists = query_multimodal(prompt)
-        
-        if visualize and docs:
-            with st.spinner("Generating visualization..."):
-                viz_code = generate_visualization_code(docs)
-                if viz_code != "NO_DATA":
-                    st.code(viz_code, language="python")
-                else:
-                    st.info("No data for visualization")
-        
-        answer = harness_execute(prompt, docs, dists)
-        
-        sources = []
-        if docs:
-            for d, dist in zip(docs, dists):
-                content_type = d.metadata.get("content_type", "text")
-                source = {
-                    "file": d.metadata.get("source_file", "Unknown"),
-                    "page": d.metadata.get("page", 0),
-                    "dist": dist,
-                    "text": d.page_content[:200],
-                    "type": content_type,
-                }
-                if content_type == "image":
-                    source["image_path"] = d.metadata.get("image_path")
-                    source["image_id"] = d.metadata.get("image_id")
-                sources.append(source)
-        
+    try:
+        with st.spinner("Thinking..."):
+            docs, dists = query_multimodal(prompt)
+            
+            if visualize and docs:
+                with st.spinner("Generating visualization..."):
+                    viz_code = generate_visualization_code(docs)
+                    if viz_code != "NO_DATA":
+                        st.code(viz_code, language="python")
+                    else:
+                        st.info("No data for visualization")
+            
+            answer = harness_execute(prompt, docs, dists)
+            
+            sources = []
+            if docs:
+                for d, dist in zip(docs, dists):
+                    content_type = d.metadata.get("content_type", "text")
+                    source = {
+                        "file": d.metadata.get("source_file", "Unknown"),
+                        "page": d.metadata.get("page", 0),
+                        "dist": dist,
+                        "text": d.page_content[:200],
+                        "type": content_type,
+                    }
+                    if content_type == "image":
+                        source["image_path"] = d.metadata.get("image_path")
+                        source["image_id"] = d.metadata.get("image_id")
+                    sources.append(source)
+            
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": answer, 
+                "sources": sources
+            })
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc(), language="python")
         st.session_state.messages.append({
-            "role": "assistant", 
-            "content": answer, 
-            "sources": sources
+            "role": "assistant",
+            "content": f"Sorry, I encountered an error: {str(e)}",
+            "sources": []
         })
     
     st.rerun()
