@@ -4,26 +4,20 @@ A powerful local-first RAG system that processes PDF documents with text, tables
 
 ## Architecture Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        Local RAG Pipeline                               │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │  ┌──────────────┐    ┌──────────────────┐    ┌───────────────────────┐ │
-│  │   PDF Files  │───▶│ Contextual       │───▶│ Chroma Vector Store  │ │
-│  │   (Data/)    │    │ Retrieval        │    │ (Embeddings)         │ │
+│  │   PDF Files  │───▶│ PyPDF Ingestion  │───▶│ Chroma Vector Store  │ │
+│  │   (Data/)    │    │ (100% Offline)   │    │ (Embeddings)         │ │
 │  └──────────────┘    └──────────────────┘    └───────────────────────┘ │
-│                              │                          │              │
-│                              ▼                          ▼              │
-│                       ┌─────────────┐          ┌───────────────────┐  │
-│                       │ Docling     │          │ Similarity        │  │
-│                       │ (OCR/Layout)│          │ Search (k=20)     │  │
-│                       └─────────────┘          └───────────────────┘  │
 │                                                         │              │
 │                                                         ▼              │
 │  ┌──────────────────┐    ┌─────────────────┐    ┌───────────────────┐ │
-│  │  The Harness    │◀───│ Multi-Query     │◀───│ Retrieved         │ │
-│  │  (LLM Response)  │    │ Strategy        │    │ Context           │ │
+│  │  The Harness    │◀───│ Multi-Query     │◀───│ Similarity Search │ │
+│  │  (LLM Response)  │    │ Strategy        │    │ (k=20)            │ │
 │  └──────────────────┘    └─────────────────┘    └───────────────────┘ │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -31,21 +25,21 @@ A powerful local-first RAG system that processes PDF documents with text, tables
 
 ## Features
 
-### 1. **Multimodal Document Processing**
-- **Docling** for advanced PDF parsing with OCR and layout understanding
-- Extracts text, tables, and images from PDFs
-- Falls back to PyPDF for basic text extraction if Docling fails
+### 1. **100% Offline Document Processing**
+- **PyPDF** for fast, local PDF parsing without requiring any model downloads (Docling removed for true offline reliability).
+- Extracts text securely and locally.
+- Chunking optimized with `RecursiveCharacterTextSplitter` (Size: 1000, Overlap: 200).
 
-### 2. **Contextual Retrieval**
-- Generates context for each chunk to improve retrieval accuracy
-- Uses LLM to describe how a chunk fits into the broader document
-- Enriches chunks with contextual information before embedding
+### 2. **No Internet Required**
+- Runs entirely on local hardware.
+- Streamlit telemetry heavily blocked to maintain complete privacy.
+- Uses local Ollama LLMs for all embeddings, answers, and data processing.
 
 ### 3. **Three-Layer Intelligence Engine**
 
 | Layer | Component | Description |
 |-------|-----------|-------------|
-| **Ingestion** | Contextual Retrieval | Enriches document chunks with context |
+| **Ingestion** | PyPDF Parser | Parses and chunks text entirely locally and offline |
 | **Core** | The Harness | Friendly teaching assistant with Plan-Route-Act-Verify |
 | **Viz** | Data Analyst | Generates Plotly visualizations from data |
 
@@ -121,7 +115,7 @@ Key parameters in `app/multimodal_rag.py`:
 | `LLM_MODEL` | phi3 | Language model |
 | `VISION_MODEL` | llava | Vision model |
 | `RETRIEVAL_K` | 20 | Number of chunks to retrieve |
-| `CHUNK_SIZE` | 400 | Text chunk size |
+| `CHUNK_SIZE` | 1000 | Text chunk size (Overlap: 200) |
 | `MAX_COSINE_DIST` | 0.9 | Similarity threshold |
 
 ## Project Structure
@@ -144,10 +138,10 @@ local-rag/
 
 ### Document Processing Pipeline
 1. PDFs are loaded from `data/` folder
-2. Docling extracts text, tables, and images
-3. Each text chunk gets contextual enrichment
-4. Images are captioned using LLaVA
-5. All content is embedded and stored in Chroma
+2. PyPDF parses text elements 100% offline at high speed
+3. Text is chunked explicitly using robust character mapping
+4. Images are captioned using LLaVA (if vision configured)
+5. All content is embedded and stored in Chroma locally
 
 ### Query Flow
 1. User enters a question

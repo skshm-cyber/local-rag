@@ -22,8 +22,8 @@ LLM_MODEL = "phi3"
 VISION_MODEL = "llava"
 
 RETRIEVAL_K = 20
-CHUNK_SIZE = 400
-CHUNK_OVERLAP = 0
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
 MAX_COSINE_DIST = 0.9
 MAX_CONTEXT_CHARS = 8000
 
@@ -31,7 +31,7 @@ IMAGES_PATH.mkdir(exist_ok=True)
 
 OLLAMA_AVAILABLE = False
 
-CONTEXTUAL_RETRIEVAL_SYSTEM = """Your task is to create a short, succinct context to situate a chunk within a document. I will provide a whole document and a specific chunk from it. Explain what the document is and how this chunk fits into the sub-topic being discussed. Output only the context and nothing else."""
+# Contextual retrieval disabled for fast offline processing
 
 HARNESS_SYSTEM = """You are a friendly and clear teaching assistant. Your job is to explain concepts simply and show relevant images when available.
 
@@ -88,89 +88,8 @@ def get_vector_store():
     )
 
 
-def generate_contextual_retrieval_context(whole_document: str, chunk_content: str) -> str:
-    """Generate contextual retrieval context for a chunk."""
-    check_ollama()
-    llm = get_llm()
-    
-    prompt = f"""{CONTEXTUAL_RETRIEVAL_SYSTEM}
-
-<document>
-{whole_document[:5000]}
-</document>
-
-Here is the chunk we want to situate within the whole document:
-<chunk>
-{chunk_content[:1000]}
-</chunk>"""
-    
-    try:
-        response = llm.invoke(prompt)
-        return response.content if hasattr(response, "content") else str(response)
-    except Exception as e:
-        return ""
-
-
-def parse_pdf_with_docling(pdf_path: str) -> Tuple[List[Document], List[Tuple[Image.Image, str, int]]]:
-    """Parse PDF using Docling for better OCR and layout understanding."""
-    from docling.document_converter import DocumentConverter
-    from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import PdfPipelineOptions
-    
-    images = []
-    text_docs = []
-    
-    try:
-        conv = DocumentConverter(
-            formats=[InputFormat.PDF],
-            pipeline_options=PdfPipelineOptions()
-        )
-        result = conv.convert(pdf_path)
-        
-        doc = result.document
-        
-        for page_num, page in enumerate(doc.pages):
-            page_images = []
-            if hasattr(page, 'image') and page.image:
-                img = page.image
-                img_id = f"{Path(pdf_path).stem}_page{page_num+1}"
-                page_images.append((img, img_id, page_num + 1))
-                images.extend(page_images)
-            
-            text = page.text if hasattr(page, 'text') else ""
-            if text:
-                doc_obj = Document(
-                    page_content=text,
-                    metadata={
-                        "source_file": Path(pdf_path).name,
-                        "content_type": "text",
-                        "page": page_num + 1,
-                    }
-                )
-                text_docs.append(doc_obj)
-        
-        if hasattr(doc, 'tables') and doc.tables:
-            for table in doc.tables:
-                table_text = table.text if hasattr(table, 'text') else str(table)
-                doc_obj = Document(
-                    page_content=f"Table: {table_text}",
-                    metadata={
-                        "source_file": Path(pdf_path).name,
-                        "content_type": "table",
-                        "page": table.page_no if hasattr(table, 'page_no') else 0,
-                    }
-                )
-                text_docs.append(doc_obj)
-                
-    except Exception as e:
-        print(f"Docling parse error: {e}")
-        return parse_pdf_fallback(pdf_path)
-    
-    return text_docs, images
-
-
-def parse_pdf_fallback(pdf_path: str) -> Tuple[List[Document], List[Tuple[Image.Image, str, int]]]:
-    """Fallback using pypdf if Docling fails."""
+def parse_pdf_document(pdf_path: str) -> Tuple[List[Document], List[Tuple[Image.Image, str, int]]]:
+    """Parse PDF completely offline using PyPDF."""
     from pypdf import PdfReader
     from langchain_community.document_loaders import PyPDFLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -182,10 +101,13 @@ def parse_pdf_fallback(pdf_path: str) -> Tuple[List[Document], List[Tuple[Image.
         reader = PdfReader(pdf_path)
         for page_num, page in enumerate(reader.pages):
             for img_index, img in enumerate(page.images):
-                image_data = img.data
-                image = Image.open(io.BytesIO(image_data))
-                image_id = f"{Path(pdf_path).stem}_p{page_num+1}_img{img_index+1}"
-                images.append((image, image_id, page_num + 1))
+                try:
+                    image_data = img.data
+                    image = Image.open(io.BytesIO(image_data))
+                    image_id = f"{Path(pdf_path).stem}_p{page_num+1}_img{img_index+1}"
+                    images.append((image, image_id, page_num + 1))
+                except Exception as e:
+                    print(f"Error loading image on page {page_num+1}: {e}")
     except Exception as e:
         print(f"Image extraction error: {e}")
     
@@ -207,51 +129,39 @@ def parse_pdf_fallback(pdf_path: str) -> Tuple[List[Document], List[Tuple[Image.
     return text_docs, images
 
 
-def process_pdf_with_docling(pdf_path: str) -> Tuple[List[Document], List[Document]]:
-    """Process PDF using Docling - extracts text, tables, images with better OCR."""
+def process_pdf_document(pdf_path: str) -> Tuple[List[Document], List[Document]]:
+    """Process PDF offline - extracts and chunks text, saves images."""
     check_ollama()
     
-    try:
-        text_docs, extracted_images = parse_pdf_with_docling(pdf_path)
-    except Exception as e:
-        print(f"Docling failed, using fallback: {e}")
-        text_docs, extracted_images = parse_pdf_fallback(pdf_path)
-    
-    whole_document = "\n\n".join([doc.page_content for doc in text_docs])
-    
-    enriched_docs = []
-    for doc in text_docs:
-        if doc.metadata.get("content_type") == "text":
-            context = generate_contextual_retrieval_context(whole_document, doc.page_content)
-            if context:
-                enriched_content = f"[CONTEXT: {context}]\n\n{doc.page_content}"
-                doc.page_content = enriched_content
-        enriched_docs.append(doc)
+    text_docs, extracted_images = parse_pdf_document(pdf_path)
     
     image_docs = []
     for image, image_id, page_num in extracted_images:
-        image_path = save_image(image, image_id)
-        
-        context = ""
-        for doc in text_docs:
-            if doc.metadata.get("page") == page_num:
-                context += doc.page_content[:500] + " "
-        
-        caption = caption_image_with_vlm(image, image_id, context.strip())
-        
-        doc = Document(
-            page_content=caption,
-            metadata={
-                "source_file": Path(pdf_path).name,
-                "content_type": "image",
-                "image_id": image_id,
-                "image_path": image_path,
-                "page": page_num,
-            }
-        )
-        image_docs.append(doc)
+        try:
+            image_path = save_image(image, image_id)
+            
+            context = ""
+            for doc in text_docs:
+                if doc.metadata.get("page") == page_num:
+                    context += doc.page_content[:500] + " "
+            
+            caption = caption_image_with_vlm(image, image_id, context.strip())
+            
+            doc = Document(
+                page_content=caption,
+                metadata={
+                    "source_file": Path(pdf_path).name,
+                    "content_type": "image",
+                    "image_id": image_id,
+                    "image_path": image_path,
+                    "page": page_num,
+                }
+            )
+            image_docs.append(doc)
+        except Exception as e:
+            print(f"Error processing image {image_id}: {e}")
     
-    return enriched_docs, image_docs
+    return text_docs, image_docs
 
 
 def caption_image_with_vlm(image: Image.Image, image_id: str, context: str = "") -> str:
@@ -389,8 +299,8 @@ def sync_multimodal_data() -> Dict[str, int]:
             
         file_path = str(DATA_PATH / file_name)
         
-        with st.spinner(f"Processing {file_name} with Contextual Retrieval..."):
-            text_docs, image_docs = process_pdf_with_docling(file_path)
+        with st.spinner(f"Processing {file_name}..."):
+            text_docs, image_docs = process_pdf_document(file_path)
             
             if text_docs:
                 vs.add_documents(text_docs)
